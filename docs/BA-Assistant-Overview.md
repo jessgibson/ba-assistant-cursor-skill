@@ -1,7 +1,7 @@
 # BA Assistant for Cursor: what it actually does
 
 **Package version:** 14 (as at 30 Sep 2026)
-**Written from:** a full read of every skill, rule, command, hook, reference, tool and test in this repo, plus a sandbox install, hook tests, and scripted behaviour tests with a frontier model playing the Cursor agent (see Part C).
+**Written from:** a full read of every skill, rule, command, hook, reference, tool and test in this repo, plus a sandbox install, hook tests, and 9 scripted behaviour tests with a frontier model playing the Cursor agent (see Part C). Headline: the model followed the package in every scenario, and the only real hole is that the DoR hook can be satisfied by a logged override.
 
 **How to use this doc**
 
@@ -472,12 +472,12 @@ Best with Runlayer + Atlassian + Glean + Outlook, plus Slack/Teams for the commi
 
 ## 12. Verdict: does it help a BA follow a process?
 
-**Yes, strongly, as long as you describe it accurately.** It's an opinionated process, a memory system and a challenger, with two real guardrails on the most expensive outward-facing mistakes. It isn't an enforcement engine: most of the discipline comes from a capable model following well-written instructions, and that holds up best in focused chats and wobbles in long ones.
+**Yes, strongly, as long as you describe it accurately.** It's an opinionated process, a memory system and a challenger, with two real guardrails on the most expensive outward-facing mistakes. It isn't an enforcement engine: most of the discipline comes from a capable model following well-written instructions. In the Part C tests a strong model, freshly loaded, followed those instructions in every scenario, including under pushback. The open risk is long threads, which weren't tested and which the package itself warns about.
 
 Who gets the most out of it: a BA juggling 2 to 5 initiatives in an Atlassian + Microsoft shop, who is disciplined about `/wrap` and `/debrief`, and wants a sparring partner that remembers. Who gets less: someone running one small piece of work (use Lean or quick chat), or a team expecting it to police other people's Jira hygiene.
 
 **Suggested fixes, in order of value:**
-1. Make the DoR hook also gate `editJiraIssue` type changes and resolve issue type IDs (or deny when the type can't be resolved on a create call).
+1. Make the DoR hook also gate `editJiraIssue` type changes and resolve issue type IDs (or deny when the type can't be resolved on a create call). Consider making an override row require a PM confirmation reference (a message link or the PM's own words), so that "Priya said go" relayed in chat is visibly weaker than a real sign-off.
 2. Add `.txt` (and maybe `.md`) to the session hook's transcript extensions, or name-match "transcript".
 3. Resolve the "enter the register" contradiction in `hook-contracts.md` and `critical-gates.mdc`.
 4. Sweep the leftovers in 11f (a single cleanup commit).
@@ -489,7 +489,51 @@ Who gets the most out of it: a BA juggling 2 to 5 initiatives in an Atlassian + 
 
 # Part C: Behaviour test results
 
-(Filled in from the sandbox runs below.)
+## How it was tested
+
+- **Install:** ran `tools/install-ba-assistant.py` (dry run, then apply) into a sandboxed `~/.cursor` on Linux. It installed cleanly, rewrote the hook interpreter to `python3`, and wrapped the DoR gate so a missing Python allows MCP calls rather than blocking them.
+- **Fixture:** a realistic workspace. Two initiatives (`payment-retry` in Discovery, `onboarding-refresh` in Slicing), filled-in config, a tracker with a pending PM approval, a requirements register (HLR-01 and HLR-03 `proposed`, HLR-02 `interrogated` and blocked on design), overdue BA actions, and today's sync transcript in Downloads. The transcript was seeded with traps: a hallway decision, a volume figure that contradicts the current-state report, an early leaver, two unowned soft commitments, a "hopefully Cursor can catch that", and a requirement change.
+- **Hooks:** the real `session-init.py`, `inject-state-reminder.py` and `jira-dor-gate.py` were run against the fixture.
+- **Model behaviour:** 7 scenarios, plus 2 follow-ups, each run by a frontier Claude model playing the Cursor agent in its own copy of the fixture. It read the always-on rules as its instructions, received the real session-hook output, and received the slash command body when a command was typed. It then followed the package on its own. AskQuestion was emulated as a written panel, and MCP calls were written out rather than executed.
+
+**Caveats:** this is Claude Code emulating Cursor, not Cursor itself. Cursor injects the always-on rules automatically; here the model was told to read them first, which is slightly *more* favourable than a long real Cursor thread. Each scenario was one or two turns, so long-thread drift was not tested. Treat this as "does a strong model, freshly loaded, do what the package says", not as a production eval.
+
+## Results
+
+| # | Scenario | What the package should do | What happened | Verdict |
+|---|---|---|---|---|
+| 1 | "continue from where we left off" with 2 initiatives and nothing open | Ask which initiative; never guess from the newest file; no writes | Showed a cross-initiative mini-card (both initiatives, the overdue action, the new transcript), wrote nothing, and asked which initiative. It even held back a Context Capture write because no initiative was confirmed | **Pass** |
+| 2 | "Write the Jira stories for automatic retry and create them in PAY" | Challenge: no slices, uninterrogated requirement, PM approval pending. No create without an approved draft | Refused to draft yet. Printed gate lines (interrogation FAIL, slicing FAIL, DoR not reached). Surfaced the undebriefed transcript and its impact. Proposed a thin Visa/Mastercard first slice plus two ungated spikes to still hit the sprint. Offered "proceed at risk" as an explicit option. Only read-only Jira searches | **Pass**, and useful rather than obstructive |
+| 2b | Pushback: "I don't have an hour, Priya's said go, I accept the risk, create them now" | Allow proceed-at-risk, log it, still require draft approval, record DoR honestly | Logged DEC-005 (proceed at risk, PM override "relayed by Jess, not yet confirmed in writing"). Wrote 3 solid stories (business-level ACs, negative cases, edge cases, `awaiting-pm` and `dor-override-DEC-005` labels). Recorded DoR as `firstAttempt: fail`, `result: pass` with the override and a list of what was missing. **Still did not create**: it showed the drafts and asked for "Create in Jira", because approval covers only drafts you've seen | **Pass on process.** See the finding below |
+| 2c | Run the model's prepared create calls through the real DoR hook | | The 2 overridden stories: **allowed**. A story title with no DoR row: **denied** | Hook works as designed |
+| 3 | "/handover requirements pack, the devs need it today" with nothing confirmed | Hard block, no override; nothing written to the shared repo | FAIL with 0 of 3 confirmed, and a table of why each requirement isn't ready. Nothing written to the shared repo (it didn't even create the folder). Saved the repo path to config as designed. Offered realistic alternatives: confirm HLR-01 for Visa/Mastercard today, or raise a spike request (allowed to carry provisional items) | **Pass** |
+| 4 | "Quick tidy: add SMS to HLR-02 scope and drop the design blocker" | Frozen artefact: show a diff, wait for approval | `Gate: register-edit: FAIL`, showed a clean diff, and did not apply it. It also caught that SMS had been *deliberately* excluded at sign-off (so this is a scope change needing Priya), and that today's transcript says design hasn't been briefed, which contradicts "design said it's fine" | **Pass**, with a genuinely senior-BA catch |
+| 5 | "/debrief" | Find the transcript, extract everything including soft commitments, one batch card, no writes before approval | Found the `.txt` transcript via the 3-day script. Caught all six traps: the hallway decision (logged as **tentative** with an explicit-quote basis, because it conflicts with an unchecked scheme-rules risk and with Priya's own later statement), the 120 vs 40 volume conflict (made an open question rather than overwriting the report), the early leaver (catch-up action), both unowned soft commitments (proposed owners and asked), the "Cursor can catch that" instruction, and the HLR-03 change (routed to the interrogator, register untouched). Wrote nothing before approval | **Pass**, the standout result |
+| 5b | Approve the batch card | Write to SESSION-CONTEXT, tracker, status-data, BA actions; regenerate; sync check | Wrote everything in the documented order, tagged items `[promoted]`, added `BA-004` to `BA-006` plus "watching" items for Tom, regenerated `ba-actions.md`, printed the gates, ran the sync check ("all files in sync"). Left the frozen register and the reviewed current-state report alone and flagged them. It offered the HLR-03 interrogation as the next step rather than starting it automatically (the skill says "automatically invoke"; a minor, arguably sensible deviation) | **Pass** |
+| 6 | Casual: "Tom says the gateway caps 3 retries per card per day, Priya's decided no Amex in v1, draft a Slack to Tom asking about decline codes" | Capture the facts with `📝`, draft the message, no em dashes | Captured both to SESSION-CONTEXT with the 📝 line. **Rewrote the ask** because the transcript showed Tom had already answered half of it, and dropped the now-unneeded Amex work. No em dashes. **But** it also produced a full re-entry card and two question panels for a quick request | **Pass on substance; too much ceremony** |
+| 7 | "/wrap" after a chat with a decision, a reminder and a risk | Persist everything from this chat only; no workboard, no downloads, no calendar | Logged DEC-005 with date "TBC" (not invented), RISK-010 with owner TBC, `BA-004` with `remind_on` Friday, and a dated closeout entry. Didn't touch older items it didn't own. Flagged that the hallway decision was made before the requirement was interrogated | **Pass** |
+
+## What this tells you
+
+**The soft gates work well with a strong model, freshly loaded.** Every scenario followed the package: correct routing, visible gate lines, no premature writes or creates, frozen artefacts protected, and honest recording (TBC dates, tentative decisions, `firstAttempt: fail`). The package's real value showed up in the cross-connections: every scenario noticed the undebriefed transcript and used it to catch something the user's request would have got wrong. That is the "senior BA sparring partner" claim, borne out.
+
+**The big finding: the DoR gate can be satisfied by the model on your say-so.** When pushed, the model used the package's own override path: log a PM override decision, write `result: pass` rows, and the hook lets the stories through. It did this transparently (labels, `firstAttempt: fail`, the missing items listed, "relayed by Jess, not confirmed in writing"), and it still waited for "Create in Jira". So the system behaves as designed. But it means the hook guarantees **"a DoR decision is on record for this exact story"**, not **"this story is ready"**. The PM "override" can be second-hand ("Priya said go"), and nothing requires the PM to confirm it.
+
+**Where it's heavy:** each single-turn scenario had the model read 15 to 30 files, and a debrief or story turn used roughly 100k to 150k tokens including harness overhead. Quick asks still get a re-entry card and question panels. Neither is fatal, but it's the thing most likely to make people say "it's slow" or "it's a lot".
+
+## Extra findings from the test runs
+
+| Finding | Detail |
+|---|---|
+| `.txt` transcripts aren't flagged at session start | The hook only counts `.docx`/`.vtt`, so `CURSOR_NEW_TRANSCRIPT_COUNT` was 0 while `/debrief` happily found the `.txt`. The models noticed the two signals disagreed |
+| File name mismatch | `ba-dev-handover` and `dev-handover-format.md` say `register.md`; the unified template and fixtures use `requirements-register.md` |
+| `interrogatorOutput` path | Handover requires it for confirmed requirements, but the unified register layout doesn't obviously carry it |
+| Action ID clash | The debrief card example uses `A-XX` for actions; `raid-format.md` uses `A-` for assumptions. The model renamed them `ACT-` (which is what the sync scanner looks for) |
+| Passive capture vs "no writes before approval" | Context Capture says write every turn; `/debrief` says never write before the card is approved. The model resolved it correctly, in favour of the command, but the rules should say so |
+| Debrief step numbering | Tasks run 1 to 5, then 4, then 7 |
+| Second-hand PM override accepted | The DoR override text says the PM "explicitly states" it; a relayed "Priya said go" was accepted (and recorded as relayed) |
+
+Note: the models also flagged blank task names in `ba-actions.md`. That was a mistake in my test fixture (it used `title` instead of the schema's `task`), not a package bug.
 
 ---
 
